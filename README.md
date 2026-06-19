@@ -6,14 +6,54 @@ O projeto usa apenas a biblioteca padrao do Python e SQLite, portanto nao exige 
 
 ## Funcionalidades
 
-- Autenticacao de usuarios com perfil `professor` ou `gestor`.
-- Cadastro de usuarios, alunos e materias.
+O sistema oferece uma API para professores e gestores acompanharem o desempenho
+academico dos alunos, identificarem risco de evasao e consultarem indicadores
+consolidados.
+
+### Autenticacao e perfis
+
+- Login com email e senha.
+- Controle de acesso por perfil:
+  - `gestor`: pode cadastrar usuarios, alunos, materias e vincular alunos a materias.
+  - `professor`: pode consultar dados academicos, registrar desempenho e gerar relatorios.
+- Rotas protegidas por token de autenticacao.
+
+### Gestao academica
+
+- Cadastro e listagem de usuarios.
+- Cadastro e listagem de alunos.
+- Cadastro e listagem de materias.
 - Vinculo de alunos a materias.
-- Registro de desempenho academico com notas, frequencia e atividades entregues.
-- Motor de analise de risco por regras.
-- Dashboard com indicadores consolidados.
-- Alertas para alunos em risco medio ou alto.
-- Geracao e consulta de relatorios.
+- Consulta detalhada de aluno por ID.
+- Validacao para impedir materia com carga horaria negativa ou zerada.
+
+### Desempenho dos alunos
+
+- Registro de notas por aluno.
+- Registro de frequencia.
+- Registro opcional de atividades entregues e atividades esperadas.
+- Associacao de desempenho a uma materia.
+- Historico de desempenhos no banco SQLite.
+- Validacao para impedir notas negativas, notas acima de 10 e frequencia fora de 0 a 100.
+
+### Analise de risco
+
+- Motor de analise deterministico baseado em regras.
+- Classificacao do aluno em risco `Baixo`, `Medio` ou `Alto`.
+- Calculo usando media das notas, frequencia, atividades entregues e fator de risco consolidado.
+- Recalculo geral dos riscos academicos.
+
+### Alertas, dashboard e relatorios
+
+- Geracao de alertas para alunos em risco medio ou alto.
+- Dashboard com indicadores gerais do sistema.
+- Consulta de alertas ativos.
+- Criacao e listagem de relatorios academicos.
+
+### Banco e testes
+
+- Banco SQLite criado automaticamente em `data/academico.db`.
+- Dados iniciais de demonstracao na primeira execucao.
 - Testes automatizados com `unittest`.
 
 ## Perfis de Acesso
@@ -65,6 +105,14 @@ http://127.0.0.1:8000/
 
 O banco SQLite sera criado automaticamente em `data/academico.db` com dados de demonstracao.
 
+Se aparecer o erro `sqlite3.DatabaseError: file is not a database`, apague o
+arquivo `data/academico.db` e execute o projeto novamente:
+
+```powershell
+Remove-Item .\data\academico.db
+python .\run.py --host 127.0.0.1 --port 8000
+```
+
 ## Usuarios de Demonstracao
 
 ```text
@@ -72,7 +120,7 @@ professor@sigma.edu / professor123
 gestor@sigma.edu / gestor123
 ```
 
-## Fluxo Basico de Teste
+## Como Testar Manualmente
 
 ### 1. Login como gestor
 
@@ -94,7 +142,15 @@ Invoke-RestMethod `
   -Headers $headers
 ```
 
-### 3. Registrar desempenho com atividades
+### 3. Listar alunos
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/alunos" `
+  -Headers $headers
+```
+
+### 4. Registrar desempenho com atividades opcionais
 
 ```powershell
 Invoke-RestMethod `
@@ -121,6 +177,14 @@ Resposta esperada, em formato resumido:
 ```
 
 Nesse exemplo, o aluno pode ser classificado como `Alto` mesmo com boa media e frequencia, porque entregou menos de 50% das atividades esperadas.
+
+### 5. Consultar alertas
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/alertas" `
+  -Headers $headers
+```
 
 ## Endpoints
 
@@ -162,6 +226,18 @@ O motor usa regras deterministicas baseadas em:
 
 Campos aceitos no registro de desempenho:
 
+Campos obrigatorios:
+
+```json
+{
+  "materia_id": 1,
+  "notas": [7.0, 8.0, 6.5],
+  "frequencia": 82
+}
+```
+
+Campos opcionais:
+
 ```json
 {
   "materia_id": 1,
@@ -175,13 +251,20 @@ Campos aceitos no registro de desempenho:
 
 `atividades_entregues` e `atividades_esperadas` sao opcionais. Quando nao forem enviados, o risco e calculado apenas com notas e frequencia.
 
+Quando forem enviados, os dois campos devem ser usados juntos:
+
+- `atividades_esperadas` deve ser maior que zero;
+- `atividades_entregues` nao pode ser negativa;
+- `atividades_entregues` nao pode ser maior que `atividades_esperadas`;
+- nao e permitido enviar `atividades_entregues` sem informar `atividades_esperadas`.
+
 Regras principais:
 
 - risco alto: media menor que 5, frequencia menor que 65%, entrega de menos de 50% das atividades ou `fator_risco >= 0.70`;
 - risco medio: media menor que 7, frequencia menor que 80%, entrega abaixo de 75% das atividades ou `fator_risco >= 0.40`;
 - risco baixo: indicadores dentro dos limites esperados.
 
-## Testes
+## Testes Automatizados
 
 Execute:
 
@@ -189,17 +272,19 @@ Execute:
 python -m unittest discover -s tests
 ```
 
-## Estrutura
+## Estrutura do Projeto
 
 ```text
 .
-├── app
-│   ├── api.py
-│   ├── database.py
-│   ├── models.py
-│   └── services.py
-├── tests
-│   └── test_services.py
-├── run.py
-└── README.md
+|-- app
+|   |-- api.py
+|   |-- database.py
+|   |-- models.py
+|   `-- services.py
+|-- data
+|   `-- academico.db
+|-- tests
+|   `-- test_services.py
+|-- run.py
+`-- README.md
 ```

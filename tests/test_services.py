@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.database import init_db, seed_db
 from app.api import Application
-from app.services import AcademicService, AuthService, MotorIA
+from app.services import AcademicService, AppError, AuthService, MotorIA
 
 
 class ServiceTests(unittest.TestCase):
@@ -49,6 +49,66 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result["analise"]["nivel"], "Alto")
         self.assertEqual(result["analise"]["atividades_entregues"], 1)
         self.assertEqual(result["analise"]["atividades_esperadas"], 4)
+
+    def test_registrar_desempenho_rejeita_nota_negativa(self) -> None:
+        with self.assertRaises(AppError) as ctx:
+            self.service.registrar_desempenho(
+                1,
+                {"materia_id": 1, "notas": [7.0, -1.0], "frequencia": 80},
+            )
+
+        self.assertEqual(ctx.exception.message, "Notas devem estar entre 0 e 10.")
+        total = self.conn.execute("SELECT COUNT(*) FROM desempenhos WHERE notas_json LIKE '%-1.0%'").fetchone()[0]
+        self.assertEqual(total, 0)
+
+    def test_registrar_desempenho_rejeita_frequencia_negativa(self) -> None:
+        with self.assertRaises(AppError) as ctx:
+            self.service.registrar_desempenho(
+                1,
+                {"materia_id": 1, "notas": [7.0, 8.0], "frequencia": -10},
+            )
+
+        self.assertEqual(ctx.exception.message, "Frequencia deve estar entre 0 e 100.")
+
+    def test_registrar_desempenho_rejeita_atividades_esperadas_zero(self) -> None:
+        with self.assertRaises(AppError) as ctx:
+            self.service.registrar_desempenho(
+                1,
+                {
+                    "materia_id": 1,
+                    "notas": [7.0, 8.0],
+                    "frequencia": 80,
+                    "atividades_entregues": 1,
+                    "atividades_esperadas": 0,
+                },
+            )
+
+        self.assertEqual(ctx.exception.message, "Atividades esperadas deve ser maior que zero.")
+
+    def test_registrar_desempenho_rejeita_atividades_entregues_sem_esperadas(self) -> None:
+        with self.assertRaises(AppError) as ctx:
+            self.service.registrar_desempenho(
+                1,
+                {
+                    "materia_id": 1,
+                    "notas": [7.0, 8.0],
+                    "frequencia": 80,
+                    "atividades_entregues": 1,
+                },
+            )
+
+        self.assertEqual(
+            ctx.exception.message,
+            "Atividades esperadas deve ser informada junto com atividades entregues.",
+        )
+
+    def test_criar_materia_rejeita_carga_horaria_negativa(self) -> None:
+        with self.assertRaises(AppError) as ctx:
+            self.service.criar_materia(
+                {"nome": "Turma Teste", "carga_horaria": -40, "semestre": "2026.1"},
+            )
+
+        self.assertEqual(ctx.exception.message, "Carga horaria deve ser maior que zero.")
 
     def test_recalcular_riscos_processa_ultimos_desempenhos(self) -> None:
         result = self.service.recalcular_riscos()

@@ -64,10 +64,14 @@ class MotorIA:
     ) -> AnaliseRisco:
         if not notas:
             raise AppError("Informe ao menos uma nota para analise.")
+        if any(nota < 0 or nota > 10 for nota in notas):
+            raise AppError("Notas devem estar entre 0 e 10.")
         if frequencia < 0 or frequencia > 100:
             raise AppError("Frequencia deve estar entre 0 e 100.")
         if atividades_entregues is not None and atividades_entregues < 0:
             raise AppError("Atividades entregues nao pode ser negativo.")
+        if atividades_entregues is not None and atividades_esperadas is None:
+            raise AppError("Atividades esperadas deve ser informada junto com atividades entregues.")
         if atividades_esperadas is not None and atividades_esperadas <= 0:
             raise AppError("Atividades esperadas deve ser maior que zero.")
         if (
@@ -157,6 +161,9 @@ class AcademicService:
         )
 
     def criar_materia(self, payload: dict[str, Any]) -> dict[str, Any]:
+        carga_horaria = int(require(payload, "carga_horaria"))
+        if carga_horaria <= 0:
+            raise AppError("Carga horaria deve ser maior que zero.")
         cur = self.conn.execute(
             """
             INSERT INTO materias (nome, carga_horaria, semestre, professor_id)
@@ -164,7 +171,7 @@ class AcademicService:
             """,
             (
                 require(payload, "nome"),
-                int(require(payload, "carga_horaria")),
+                carga_horaria,
                 require(payload, "semestre"),
                 payload.get("professor_id"),
             ),
@@ -242,6 +249,7 @@ class AcademicService:
         atividades_entregues = optional_int(payload.get("atividades_entregues"))
         atividades_esperadas = optional_int(payload.get("atividades_esperadas"))
         data_referencia = payload.get("data_referencia", today_iso())
+        analise = self.motor_ia.analisar(aluno_id, notas, frequencia, atividades_entregues, atividades_esperadas)
         self.conn.execute(
             """
             INSERT INTO desempenhos
@@ -258,7 +266,6 @@ class AcademicService:
                 data_referencia,
             ),
         )
-        analise = self.motor_ia.analisar(aluno_id, notas, frequencia, atividades_entregues, atividades_esperadas)
         self._persistir_analise(analise)
         self.conn.commit()
         return {"aluno": self.obter_aluno(aluno_id), "analise": analise.to_dict()}
