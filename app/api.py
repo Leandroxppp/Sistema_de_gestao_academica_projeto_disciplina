@@ -40,6 +40,11 @@ class Application:
         self.add("POST", r"^/alunos/(?P<aluno_id>\d+)/desempenhos$", self.registrar_desempenho)
         self.add("POST", r"^/analises/recalcular$", self.recalcular_riscos)
         self.add("GET", r"^/dashboard$", self.dashboard)
+        self.add(
+            "GET",
+            r"^/dashboard/aluno/(?P<aluno_id>\d+)$",
+            self.dashboard_individual
+        )
         self.add("GET", r"^/alertas$", self.alertas)
         self.add("GET", r"^/relatorios$", self.relatorios)
         self.add("POST", r"^/relatorios$", self.criar_relatorio)
@@ -127,6 +132,16 @@ class Application:
     def dashboard(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         return 200, self.academic.dashboard()
 
+    def dashboard_individual(
+        self,
+        params: dict[str, str],
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> tuple[int, Any]:
+        return 200, self.academic.obter_aluno(
+            int(params["aluno_id"])
+        )
+
     def alertas(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         return 200, self.academic.listar_alertas()
 
@@ -151,6 +166,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._handle()
 
     def do_PATCH(self) -> None:
+        self._handle()
+
+    def do_DELETE(self) -> None:
         self._handle()
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -180,7 +198,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _send(self, status: int, payload: Any) -> None:
         self.send_response(status)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         if payload is None:
             self.end_headers()
