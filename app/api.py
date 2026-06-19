@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from threading import RLock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
@@ -15,15 +16,18 @@ RouteHandler = Callable[[dict[str, str], dict[str, Any], dict[str, str]], tuple[
 
 
 class Application:
-    def __init__(self) -> None:
-        self.conn = connect()
+    def __init__(self, conn: sqlite3.Connection | None = None) -> None:
+        self.conn = conn or connect()
         init_db(self.conn)
-        seed_db(self.conn)
+        seeded = seed_db(self.conn)
         self.auth = AuthService(self.conn)
         self.academic = AcademicService(self.conn, MotorIA())
         self.lock = RLock()
         self.routes: list[tuple[str, re.Pattern[str], RouteHandler, bool]] = []
         self._register_routes()
+        # Em seed novo, o MotorIA calcula analises/alertas/status de todos os alunos.
+        if seeded:
+            self.academic.recalcular_riscos()
 
     def _register_routes(self) -> None:
         self.add("GET", r"^/$", self.home, public=True)
@@ -46,8 +50,12 @@ class Application:
             self.dashboard_individual
         )
         self.add("GET", r"^/alertas$", self.alertas)
+        self.add("PATCH", r"^/alertas/(?P<alerta_id>\d+)$", self.atualizar_alerta)
         self.add("GET", r"^/relatorios$", self.relatorios)
         self.add("POST", r"^/relatorios$", self.criar_relatorio)
+        self.add("GET", r"^/turmas$", self.turmas)
+        self.add("POST", r"^/turmas$", self.criar_turma)
+        self.add("GET", r"^/turmas/(?P<turma_id>\d+)$", self.turma)
 
     def add(self, method: str, pattern: str, handler: RouteHandler, public: bool = False) -> None:
         self.routes.append((method, re.compile(pattern), handler, public))
@@ -145,12 +153,30 @@ class Application:
     def alertas(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         return 200, self.academic.listar_alertas()
 
+    def atualizar_alerta(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
+        if "ativo" not in body or not isinstance(body["ativo"], bool):
+            raise AppError("Campo ativo deve ser booleano.")
+        return 200, self.academic.atualizar_status_alerta(
+            int(params["alerta_id"]),
+            body["ativo"],
+        )
+
     def relatorios(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         return 200, self.academic.listar_relatorios()
 
     def criar_relatorio(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         user = body.get("_current_user") or {}
         return 201, self.academic.criar_relatorio(body, user.get("id"))
+
+    def turmas(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
+        return 200, self.academic.listar_turmas()
+
+    def turma(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
+        return 200, self.academic.obter_turma(int(params["turma_id"]))
+
+    def criar_turma(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
+        require_gestor(body)
+        return 201, self.academic.criar_turma(body)
 
 
 class RequestHandler(BaseHTTPRequestHandler):

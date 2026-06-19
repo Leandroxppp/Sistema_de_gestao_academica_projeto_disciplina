@@ -18,6 +18,9 @@ class ServiceTests(unittest.TestCase):
         seed_db(self.conn)
         self.service = AcademicService(self.conn, MotorIA())
 
+    def tearDown(self) -> None:
+        self.conn.close()
+
     def test_login_valido_retorna_token(self) -> None:
         auth = AuthService(self.conn)
         result = auth.login("professor@sigma.edu", "professor123")
@@ -111,17 +114,53 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.message, "Carga horaria deve ser maior que zero.")
 
     def test_recalcular_riscos_processa_ultimos_desempenhos(self) -> None:
+        expected = self.conn.execute(
+            "SELECT COUNT(DISTINCT aluno_id) FROM desempenhos"
+        ).fetchone()[0]
         result = self.service.recalcular_riscos()
-        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["total"], expected)
+
+    def test_alerta_pode_ser_resolvido_e_reaberto(self) -> None:
+        self.service.recalcular_riscos()
+        alerta_id = self.conn.execute(
+            "SELECT id FROM alertas WHERE ativo = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+
+        resolvido = self.service.atualizar_status_alerta(alerta_id, False)
+        self.assertEqual(resolvido["ativo"], 0)
+        self.assertIsNotNone(resolvido["resolvido_em"])
+
+        reaberto = self.service.atualizar_status_alerta(alerta_id, True)
+        self.assertEqual(reaberto["ativo"], 1)
+        self.assertIsNone(reaberto["resolvido_em"])
+
+    def test_rota_pode_resolver_alerta(self) -> None:
+        self.service.recalcular_riscos()
+        alerta_id = self.conn.execute(
+            "SELECT id FROM alertas WHERE ativo = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        app = Application(self.conn)
+        login = app.auth.login("professor@sigma.edu", "professor123")
+
+        status, payload = app.dispatch(
+            "PATCH",
+            f"/alertas/{alerta_id}",
+            {"ativo": False},
+            {"authorization": f"Bearer {login['token']}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["ativo"], 0)
+        self.assertIsNotNone(payload["resolvido_em"])
 
     def test_rota_inicial_publica_existe(self) -> None:
-        app = Application()
+        app = Application(self.conn)
         status, payload = app.dispatch("GET", "/", {}, {})
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "online")
 
     def test_professor_nao_pode_cadastrar_aluno(self) -> None:
-        app = Application()
+        app = Application(self.conn)
         login = app.auth.login("professor@sigma.edu", "professor123")
         with self.assertRaises(Exception) as ctx:
             app.dispatch(
@@ -133,7 +172,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 403)
 
     def test_gestor_pode_cadastrar_aluno(self) -> None:
-        app = Application()
+        app = Application(self.conn)
         login = app.auth.login("gestor@sigma.edu", "gestor123")
         matricula = f"G{uuid4().hex[:8]}"
         status, payload = app.dispatch(

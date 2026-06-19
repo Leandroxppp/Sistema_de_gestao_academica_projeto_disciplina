@@ -96,7 +96,7 @@ class MotorIA:
 
         if media < 5.0 or frequencia < 65.0 or deficit_atividades >= 0.5 or fator_risco >= 0.7:
             nivel = NivelRisco.ALTO
-            mensagem = "Aluno em risco critico: desempenho e/ou frequencia exigem intervencao imediata."
+            mensagem = "Aluno em risco alto: desempenho e/ou frequencia exigem intervencao imediata."
         elif media < 7.0 or frequencia < 80.0 or deficit_atividades >= 0.25 or fator_risco >= 0.4:
             nivel = NivelRisco.MEDIO
             mensagem = "Aluno em atencao: acompanhar proximas avaliacoes e frequencia."
@@ -180,7 +180,15 @@ class AcademicService:
         return fetch_one(self.conn, "SELECT * FROM materias WHERE id = ?", (cur.lastrowid,))
 
     def listar_alunos(self) -> list[dict[str, Any]]:
-        alunos = fetch_all(self.conn, "SELECT * FROM alunos ORDER BY nome")
+        alunos = fetch_all(
+            self.conn,
+            """
+            SELECT a.*, t.nome AS turma_nome
+            FROM alunos a
+            LEFT JOIN turmas t ON t.id = a.turma_id
+            ORDER BY a.nome
+            """,
+        )
         for aluno in alunos:
             normalize_fator_risco(aluno)
             aluno["materias"] = self._materias_do_aluno(aluno["id"])
@@ -188,7 +196,16 @@ class AcademicService:
         return alunos
 
     def obter_aluno(self, aluno_id: int) -> dict[str, Any]:
-        aluno = fetch_one(self.conn, "SELECT * FROM alunos WHERE id = ?", (aluno_id,))
+        aluno = fetch_one(
+            self.conn,
+            """
+            SELECT a.*, t.nome AS turma_nome
+            FROM alunos a
+            LEFT JOIN turmas t ON t.id = a.turma_id
+            WHERE a.id = ?
+            """,
+            (aluno_id,),
+        )
         if not aluno:
             raise AppError("Aluno nao encontrado.", 404)
         normalize_fator_risco(aluno)
@@ -351,6 +368,30 @@ class AcademicService:
             """,
         )
 
+    def atualizar_status_alerta(self, alerta_id: int, ativo: bool) -> dict[str, Any]:
+        alerta = fetch_one(self.conn, "SELECT id FROM alertas WHERE id = ?", (alerta_id,))
+        if not alerta:
+            raise AppError("Alerta nao encontrado.", 404)
+        self.conn.execute(
+            """
+            UPDATE alertas
+            SET ativo = ?, resolvido_em = CASE WHEN ? = 1 THEN NULL ELSE CURRENT_TIMESTAMP END
+            WHERE id = ?
+            """,
+            (1 if ativo else 0, 1 if ativo else 0, alerta_id),
+        )
+        self.conn.commit()
+        return fetch_one(
+            self.conn,
+            """
+            SELECT a.*, al.nome AS aluno_nome, al.matricula
+            FROM alertas a
+            JOIN alunos al ON al.id = a.aluno_id
+            WHERE a.id = ?
+            """,
+            (alerta_id,),
+        )
+
     def listar_relatorios(self) -> list[dict[str, Any]]:
         return fetch_all(
             self.conn,
@@ -375,6 +416,101 @@ class AcademicService:
         )
         self.conn.commit()
         return fetch_one(self.conn, "SELECT * FROM relatorios WHERE id = ?", (cur.lastrowid,))
+
+    # ── Turmas ────────────────────────────────────────────────────────────────
+
+    def listar_turmas(self) -> list[dict[str, Any]]:
+        turmas = fetch_all(
+            self.conn,
+            """
+            SELECT t.*, u.nome AS professor_nome
+            FROM turmas t
+            LEFT JOIN usuarios u ON u.id = t.professor_id
+            ORDER BY t.nome
+            """,
+        )
+        for turma in turmas:
+            self._compor_turma(turma)
+        return turmas
+
+    def obter_turma(self, turma_id: int) -> dict[str, Any]:
+        turma = fetch_one(
+            self.conn,
+            """
+            SELECT t.*, u.nome AS professor_nome
+            FROM turmas t
+            LEFT JOIN usuarios u ON u.id = t.professor_id
+            WHERE t.id = ?
+            """,
+            (turma_id,),
+        )
+        if not turma:
+            raise AppError("Turma nao encontrada.", 404)
+        self._compor_turma(turma)
+        turma["alunos"] = fetch_all(
+            self.conn,
+            "SELECT id, nome, matricula, email, status, status_risco, probabilidade_evasao FROM alunos WHERE turma_id = ? ORDER BY nome",
+            (turma_id,),
+        )
+        for aluno in turma["alunos"]:
+            normalize_fator_risco(aluno)
+            aluno["ultima_analise"] = self._ultima_analise(aluno["id"])
+        return turma
+
+    def criar_turma(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cur = self.conn.execute(
+            """
+            INSERT INTO turmas (nome, curso, semestre, ano, professor_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                require(payload, "nome"),
+                require(payload, "curso"),
+                require(payload, "semestre"),
+                int(require(payload, "ano")),
+                payload.get("professor_id"),
+            ),
+        )
+        self.conn.commit()
+        return self.obter_turma(cur.lastrowid)
+
+    def _compor_turma(self, turma: dict[str, Any]) -> None:
+        """Anexa disciplinas e indicadores agregados (a partir da ultima analise de cada aluno)."""
+        turma_id = turma["id"]
+        disciplinas = fetch_all(
+            self.conn,
+            """
+            SELECT m.nome
+            FROM turma_disciplinas td
+            JOIN materias m ON m.id = td.materia_id
+            WHERE td.turma_id = ?
+            ORDER BY m.nome
+            """,
+            (turma_id,),
+        )
+        turma["disciplinas"] = [d["nome"] for d in disciplinas]
+
+        alunos = fetch_all(
+            self.conn,
+            "SELECT id, status_risco FROM alunos WHERE turma_id = ?",
+            (turma_id,),
+        )
+        total = len(alunos)
+        distribuicao = {"Baixo": 0, "Medio": 0, "Alto": 0}
+        soma_notas = 0.0
+        soma_freq = 0.0
+        com_analise = 0
+        for aluno in alunos:
+            distribuicao[aluno["status_risco"]] = distribuicao.get(aluno["status_risco"], 0) + 1
+            analise = self._ultima_analise(aluno["id"])
+            if analise:
+                soma_notas += float(analise["media_notas"])
+                soma_freq += float(analise["frequencia"])
+                com_analise += 1
+        turma["total_alunos"] = total
+        turma["media_geral"] = round(soma_notas / com_analise, 2) if com_analise else 0
+        turma["media_frequencia"] = round(soma_freq / com_analise, 2) if com_analise else 0
+        turma["distribuicao_risco"] = distribuicao
 
     def _persistir_analise(self, analise: AnaliseRisco) -> None:
         status = {

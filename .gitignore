@@ -1,0 +1,9 @@
+# Banco SQLite gerado em runtime (recriado pelo seed)
+data/*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
