@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from threading import RLock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
@@ -12,6 +13,20 @@ from .services import AcademicService, AppError, AuthService, MotorIA
 
 
 RouteHandler = Callable[[dict[str, str], dict[str, Any], dict[str, str]], tuple[int, Any]]
+
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+STATIC_MOUNT = "/app"
+
+MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".mjs": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
 
 
 class Application:
@@ -29,6 +44,7 @@ class Application:
         self.add("GET", r"^/$", self.home, public=True)
         self.add("GET", r"^/health$", self.health, public=True)
         self.add("POST", r"^/auth/login$", self.login, public=True)
+        self.add("POST", r"^/auth/logout$", self.logout, public=True)
         self.add("GET", r"^/usuarios$", self.usuarios)
         self.add("POST", r"^/usuarios$", self.criar_usuario)
         self.add("GET", r"^/materias$", self.materias)
@@ -74,16 +90,19 @@ class Application:
         return 200, {
             "mensagem": "Backend do Sistema de Gestao do Desempenho Estudantil",
             "status": "online",
+            "frontend": f"GET {STATIC_MOUNT}/",
             "autenticacao": {
                 "endpoint": "POST /auth/login",
+                "logout": "POST /auth/logout",
                 "usuarios_demo": [
                     {"email": "professor@sigma.edu", "senha": "professor123"},
                     {"email": "gestor@sigma.edu", "senha": "gestor123"},
                 ],
             },
-            "endpoints_publicos": ["GET /", "GET /health", "POST /auth/login"],
+            "endpoints_publicos": ["GET /", "GET /health", "POST /auth/login", "POST /auth/logout"],
             "endpoints_autenticados": [
                 "GET /dashboard",
+                "GET /dashboard/aluno/{aluno_id}",
                 "GET /alunos",
                 "GET /alertas",
                 "GET /relatorios",
@@ -94,6 +113,10 @@ class Application:
 
     def login(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         return 200, self.auth.login(str(body.get("email", "")), str(body.get("senha", "")))
+
+    def logout(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
+        self.auth.logout(headers.get("authorization"))
+        return 200, {"mensagem": "Sessao finalizada."}
 
     def usuarios(self, params: dict[str, str], body: dict[str, Any], headers: dict[str, str]) -> tuple[int, Any]:
         return 200, self.academic.listar_usuarios()
@@ -160,6 +183,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send(204, None)
 
     def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == STATIC_MOUNT or parsed.path.startswith(f"{STATIC_MOUNT}/"):
+            self._serve_static(parsed.path)
+            return
         self._handle()
 
     def do_POST(self) -> None:
@@ -182,10 +209,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             status, response = self.app.dispatch(self.command, parsed.path, body, headers)
             self._send(status, response)
         except AppError as exc:
+            self.app.conn.rollback()
             self._send(exc.status, {"erro": exc.message})
         except json.JSONDecodeError:
+            self.app.conn.rollback()
             self._send(400, {"erro": "JSON invalido."})
         except Exception as exc:
+            self.app.conn.rollback()
             self._send(500, {"erro": "Erro interno.", "detalhe": str(exc)})
 
     def _read_json(self) -> dict[str, Any]:
@@ -194,6 +224,39 @@ class RequestHandler(BaseHTTPRequestHandler):
             return {}
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw)
+
+    def _serve_static(self, path: str) -> None:
+        relative = path[len(STATIC_MOUNT) :] or "/"
+        if relative == "/":
+            relative = "/index.html"
+        candidate = (FRONTEND_DIR / relative.lstrip("/")).resolve()
+        frontend_root = FRONTEND_DIR.resolve()
+        if frontend_root not in candidate.parents and candidate != frontend_root:
+            self._send_static_error(403, "Acesso negado.")
+            return
+        if not candidate.exists() or candidate.is_dir():
+            # Fallback de SPA: rotas client-side (#/...) sempre recebem o index.html.
+            candidate = frontend_root / "index.html"
+        if not candidate.exists():
+            self._send_static_error(404, "Frontend nao encontrado. Confira a pasta 'frontend/'.")
+            return
+        content_type = MIME_TYPES.get(candidate.suffix, "application/octet-stream")
+        data = candidate.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_static_error(self, status: int, message: str) -> None:
+        encoded = message.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def _send(self, status: int, payload: Any) -> None:
         self.send_response(status)

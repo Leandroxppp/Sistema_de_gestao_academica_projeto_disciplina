@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+import time
 from datetime import datetime
 from typing import Any
 
-from .database import fetch_all, fetch_one, password_hash
+from .database import fetch_all, fetch_one, password_hash, verify_password
 from .models import AnaliseRisco, NivelRisco, StatusAluno, today_iso
+
+SESSION_TTL_SECONDS = 8 * 60 * 60  # token de sessao expira apos 8 horas
 
 
 class AppError(Exception):
@@ -24,20 +27,44 @@ class AuthService:
 
     def login(self, email: str, senha: str) -> dict[str, Any]:
         user = fetch_one(self.conn, "SELECT * FROM usuarios WHERE email = ?", (email,))
-        if not user or user["senha_hash"] != password_hash(senha):
+        if not user:
             raise AppError("Credenciais invalidas.", 401)
+        valido, novo_hash = verify_password(senha, user["senha_hash"])
+        if not valido:
+            raise AppError("Credenciais invalidas.", 401)
+        if novo_hash:
+            self.conn.execute("UPDATE usuarios SET senha_hash = ? WHERE id = ?", (novo_hash, user["id"]))
+            self.conn.commit()
         token = secrets.token_urlsafe(24)
         safe_user = self._safe_user(user)
-        self.sessions[token] = safe_user
-        return {"token": token, "usuario": safe_user}
+        self.sessions[token] = {"usuario": safe_user, "expira_em": time.time() + SESSION_TTL_SECONDS}
+        return {"token": token, "usuario": safe_user, "expira_em_segundos": SESSION_TTL_SECONDS}
+
+    def logout(self, authorization: str | None) -> None:
+        token = self._extract_token(authorization)
+        if token:
+            self.sessions.pop(token, None)
 
     def current_user(self, authorization: str | None) -> dict[str, Any] | None:
+        token = self._extract_token(authorization)
+        if not token:
+            return None
+        session = self.sessions.get(token)
+        if not session:
+            return None
+        if session["expira_em"] < time.time():
+            del self.sessions[token]
+            return None
+        return session["usuario"]
+
+    @staticmethod
+    def _extract_token(authorization: str | None) -> str | None:
         if not authorization:
             return None
         prefix = "Bearer "
         if not authorization.startswith(prefix):
             return None
-        return self.sessions.get(authorization[len(prefix) :])
+        return authorization[len(prefix) :]
 
     @staticmethod
     def _safe_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -125,17 +152,21 @@ class AcademicService:
     def criar_usuario(self, payload: dict[str, Any]) -> dict[str, Any]:
         nome = require(payload, "nome")
         email = require(payload, "email")
-        senha = payload.get("senha", "senha123")
+        senha = require(payload, "senha")
         perfil = require(payload, "perfil")
         if perfil not in {"professor", "gestor"}:
             raise AppError("Perfil deve ser professor ou gestor.")
-        cur = self.conn.execute(
-            """
-            INSERT INTO usuarios (nome, email, senha_hash, perfil, especializacao, cargo)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (nome, email, password_hash(senha), perfil, payload.get("especializacao"), payload.get("cargo")),
-        )
+        try:
+            cur = self.conn.execute(
+                """
+                INSERT INTO usuarios (nome, email, senha_hash, perfil, especializacao, cargo)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (nome, email, password_hash(senha), perfil, payload.get("especializacao"), payload.get("cargo")),
+            )
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            raise AppError("Ja existe um usuario cadastrado com este email.", 409)
         self.conn.commit()
         return self.obter_usuario(cur.lastrowid)
 
@@ -157,18 +188,24 @@ class AcademicService:
         )
 
     def criar_materia(self, payload: dict[str, Any]) -> dict[str, Any]:
-        cur = self.conn.execute(
-            """
-            INSERT INTO materias (nome, carga_horaria, semestre, professor_id)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                require(payload, "nome"),
-                int(require(payload, "carga_horaria")),
-                require(payload, "semestre"),
-                payload.get("professor_id"),
-            ),
-        )
+        nome = require(payload, "nome")
+        semestre = require(payload, "semestre")
+        try:
+            carga_horaria = int(require(payload, "carga_horaria"))
+        except (TypeError, ValueError):
+            raise AppError("carga_horaria deve ser um numero inteiro.")
+        professor_id = optional_int(payload.get("professor_id"))
+        try:
+            cur = self.conn.execute(
+                """
+                INSERT INTO materias (nome, carga_horaria, semestre, professor_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (nome, carga_horaria, semestre, professor_id),
+            )
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            raise AppError("Professor informado nao existe.", 400)
         self.conn.commit()
         return fetch_one(self.conn, "SELECT * FROM materias WHERE id = ?", (cur.lastrowid,))
 
@@ -203,18 +240,22 @@ class AcademicService:
         return aluno
 
     def criar_aluno(self, payload: dict[str, Any]) -> dict[str, Any]:
-        cur = self.conn.execute(
-            """
-            INSERT INTO alunos (nome, matricula, email, status)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                require(payload, "nome"),
-                require(payload, "matricula"),
-                payload.get("email"),
-                payload.get("status", StatusAluno.CADASTRADO.value),
-            ),
-        )
+        try:
+            cur = self.conn.execute(
+                """
+                INSERT INTO alunos (nome, matricula, email, status)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    require(payload, "nome"),
+                    require(payload, "matricula"),
+                    payload.get("email"),
+                    payload.get("status", StatusAluno.CADASTRADO.value),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            raise AppError("Ja existe um aluno cadastrado com esta matricula.", 409)
         self.conn.commit()
         return self.obter_aluno(cur.lastrowid)
 
@@ -234,33 +275,45 @@ class AcademicService:
 
     def registrar_desempenho(self, aluno_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         self._ensure_aluno(aluno_id)
-        materia_id = payload.get("materia_id")
+        materia_id = optional_int(payload.get("materia_id"))
         if materia_id is not None:
-            self._ensure_materia(int(materia_id))
-        notas = [float(nota) for nota in require(payload, "notas")]
-        frequencia = float(require(payload, "frequencia"))
+            self._ensure_materia(materia_id)
+        try:
+            notas = [float(nota) for nota in require(payload, "notas")]
+            frequencia = float(require(payload, "frequencia"))
+        except (TypeError, ValueError):
+            raise AppError("notas e frequencia devem ser numericos.")
         atividades_entregues = optional_int(payload.get("atividades_entregues"))
         atividades_esperadas = optional_int(payload.get("atividades_esperadas"))
         data_referencia = payload.get("data_referencia", today_iso())
-        self.conn.execute(
-            """
-            INSERT INTO desempenhos
-            (aluno_id, materia_id, notas_json, frequencia, atividades_entregues, atividades_esperadas, data_referencia)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                aluno_id,
-                materia_id,
-                json.dumps(notas),
-                frequencia,
-                atividades_entregues,
-                atividades_esperadas,
-                data_referencia,
-            ),
-        )
+
+        # A analise e calculada (e validada) ANTES de qualquer escrita no banco.
+        # Assim, um payload invalido (ex.: frequencia fora de 0-100) nunca deixa
+        # um registro de desempenho parcial/pendente na transacao da conexao.
         analise = self.motor_ia.analisar(aluno_id, notas, frequencia, atividades_entregues, atividades_esperadas)
-        self._persistir_analise(analise)
-        self.conn.commit()
+
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO desempenhos
+                (aluno_id, materia_id, notas_json, frequencia, atividades_entregues, atividades_esperadas, data_referencia)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    aluno_id,
+                    materia_id,
+                    json.dumps(notas),
+                    frequencia,
+                    atividades_entregues,
+                    atividades_esperadas,
+                    data_referencia,
+                ),
+            )
+            self._persistir_analise(analise)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         return {"aluno": self.obter_aluno(aluno_id), "analise": analise.to_dict()}
 
     def recalcular_riscos(self) -> dict[str, Any]:
@@ -453,7 +506,10 @@ def require(payload: dict[str, Any], field: str) -> Any:
 def optional_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise AppError("Valor informado deve ser um numero inteiro.")
 
 
 def normalize_fator_risco(row: dict[str, Any]) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
@@ -10,9 +12,33 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "academico.db"
 
+PBKDF2_ITERATIONS = 200_000
 
-def password_hash(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+def password_hash(password: str, salt: str | None = None) -> str:
+    """Gera hash salgado da senha (PBKDF2-HMAC-SHA256). Formato: 'salt$hash_hex'."""
+    salt = salt or secrets.token_hex(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS
+    )
+    return f"{salt}${derived.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> tuple[bool, str | None]:
+    """Verifica a senha contra o hash armazenado.
+
+    Retorna (valido, hash_atualizado). `hash_atualizado` vem preenchido quando
+    o hash estava no formato legado (sha256 sem salt) e deve ser migrado para
+    o formato salgado apos uma autenticacao bem sucedida.
+    """
+    if "$" in stored_hash:
+        salt, _, _ = stored_hash.partition("$")
+        valido = hmac.compare_digest(password_hash(password, salt), stored_hash)
+        return valido, None
+    legado = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    if hmac.compare_digest(legado, stored_hash):
+        return True, password_hash(password)
+    return False, None
 
 
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
