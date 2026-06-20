@@ -1,8 +1,5 @@
-// "Minhas Turmas": area do professor para ver somente as materias atribuidas
-// a ele e lancar o desempenho (notas, frequencia, atividades) de toda a
-// turma em uma unica tela, em vez de abrir aluno por aluno. Os relatorios e
-// analises de risco continuam sendo gerados automaticamente a partir desses
-// dados (MotorIA), sem nenhuma mudanca nessa parte.
+// "Minhas Turmas": area do professor para lancar o desempenho de toda a
+// turma em uma unica tela, em vez de abrir aluno por aluno.
 
 import { el, fmtPercent, showToast } from "../helpers.js";
 import { renderLoading, renderError } from "../layout.js";

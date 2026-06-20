@@ -148,7 +148,6 @@ def criar_materias(academic: AcademicService, usuarios: dict[str, dict[str, Any]
     return materias
 
 
-# Cada item: (chave, nome, matricula, email, [(chave_materia, ...)], [(chave_materia, notas, frequencia, data)])
 ALUNOS_PLANO: list[dict[str, Any]] = [
     {
         "chave": "carla",
