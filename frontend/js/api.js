@@ -35,6 +35,16 @@ export function clearSession() {
   localStorage.removeItem(USER_KEY);
 }
 
+function buildQuery(params = {}) {
+  const usp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    usp.set(key, value);
+  }
+  const qs = usp.toString();
+  return qs ? `?${qs}` : "";
+}
+
 async function request(method, path, body) {
   const headers = { "Content-Type": "application/json" };
   const token = getToken();
@@ -86,13 +96,21 @@ export const api = {
 
   usuarios: () => request("GET", "/usuarios"),
   criarUsuario: (payload) => request("POST", "/usuarios", payload),
+  atualizarUsuario: (id, payload) => request("PATCH", `/usuarios/${id}`, payload),
+  desativarUsuario: (id) => request("DELETE", `/usuarios/${id}`),
 
   materias: () => request("GET", "/materias"),
   criarMateria: (payload) => request("POST", "/materias", payload),
+  atualizarMateria: (id, payload) => request("PATCH", `/materias/${id}`, payload),
+  desativarMateria: (id) => request("DELETE", `/materias/${id}`),
 
-  alunos: () => request("GET", "/alunos"),
+  alunos: ({ page = 1, pageSize = 10, termo, risco, materiaId } = {}) =>
+    request("GET", `/alunos${buildQuery({ page, page_size: pageSize, termo, risco, materia_id: materiaId })}`),
+  importarAlunosCsv: (csvTexto) => request("POST", "/alunos/importar", { csv: csvTexto }),
   criarAluno: (payload) => request("POST", "/alunos", payload),
   aluno: (id) => request("GET", `/alunos/${id}`),
+  atualizarAluno: (id, payload) => request("PATCH", `/alunos/${id}`, payload),
+  desativarAluno: (id) => request("DELETE", `/alunos/${id}`),
   vincularMateria: (alunoId, materiaId) =>
     request("POST", `/alunos/${alunoId}/materias/${materiaId}`, {}),
   registrarDesempenho: (alunoId, payload) =>
@@ -104,4 +122,23 @@ export const api = {
 
   relatorios: () => request("GET", "/relatorios"),
   criarRelatorio: (payload) => request("POST", "/relatorios", payload),
+
+  auditoria: ({ page = 1, pageSize = 20 } = {}) =>
+    request("GET", `/auditoria${buildQuery({ page, page_size: pageSize })}`),
+
+  intervencoes: (alunoId) => request("GET", `/alunos/${alunoId}/intervencoes`),
+  criarIntervencao: (alunoId, payload) =>
+    request("POST", `/alunos/${alunoId}/intervencoes`, payload),
+  atualizarIntervencao: (intervencaoId, payload) =>
+    request("PATCH", `/intervencoes/${intervencaoId}`, payload),
+
+  alterarSenha: (senhaAtual, novaSenha) =>
+    request("POST", "/auth/senha", { senha_atual: senhaAtual, nova_senha: novaSenha }),
+
+  configRisco: {
+    obter: () => request("GET", "/config/risco"),
+    atualizar: (payload) => request("PATCH", "/config/risco", payload),
+  },
+
+  comparativoMaterias: () => request("GET", "/materias/comparativo"),
 };

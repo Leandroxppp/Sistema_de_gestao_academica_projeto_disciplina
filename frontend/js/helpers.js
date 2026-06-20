@@ -93,27 +93,136 @@ export function debounce(fn, wait = 250) {
   };
 }
 
-export function showToast(message, type = "info") {
+// Exibe uma notificacao temporaria. `options.onUndo`, se informado, adiciona
+// um botao "Desfazer" que executa o callback e encerra o toast imediatamente.
+export function showToast(message, type = "info", options = {}) {
+  const { onUndo, undoLabel = "Desfazer", duration = onUndo ? 6000 : 3200 } = options;
   const stack = document.getElementById("toast-stack");
-  if (!stack) return;
-  const toast = el("div", { class: `toast ${type}` }, [message]);
-  stack.appendChild(toast);
-  setTimeout(() => {
+  if (!stack) return () => {};
+
+  let timer = null;
+  function dismiss() {
+    clearTimeout(timer);
     toast.style.transition = "opacity .25s";
     toast.style.opacity = "0";
     setTimeout(() => toast.remove(), 250);
-  }, 3200);
+  }
+
+  const children = [el("span", {}, [message])];
+  if (onUndo) {
+    children.push(
+      el(
+        "button",
+        {
+          class: "toast-undo",
+          type: "button",
+          onclick: () => {
+            onUndo();
+            dismiss();
+          },
+        },
+        [undoLabel]
+      )
+    );
+  }
+
+  const toast = el("div", { class: `toast ${type}`, role: "status" }, children);
+  stack.appendChild(toast);
+  timer = setTimeout(dismiss, duration);
+  return dismiss;
 }
 
+// Modal acessivel: foco preso (Tab/Shift+Tab) dentro do dialogo, foco inicial
+// no primeiro elemento focavel, Esc fecha, e o foco retorna ao elemento que
+// abriu o modal quando ele e fechado.
 export function mountModal(contentNode, onClose) {
+  const previouslyFocused = document.activeElement;
+  const titleNode = contentNode.querySelector("h3");
+  const titleId = titleNode ? `modal-title-${Math.random().toString(36).slice(2, 9)}` : undefined;
+  if (titleNode) titleNode.id = titleId;
+
   const backdrop = el("div", {
     class: "modal-backdrop",
     onclick: (event) => {
       if (event.target === backdrop) onClose?.();
     },
   });
-  const modal = el("div", { class: "modal" }, [contentNode]);
+  const modal = el(
+    "div",
+    {
+      class: "modal",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": titleId,
+      tabIndex: -1,
+    },
+    [contentNode]
+  );
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
-  return () => backdrop.remove();
+
+  function focusableElements() {
+    return Array.from(
+      modal.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    );
+  }
+
+  const initialFocusables = focusableElements();
+  (initialFocusables[0] || modal).focus();
+
+  function onKeydown(event) {
+    if (event.key === "Escape") {
+      onClose?.();
+      return;
+    }
+    if (event.key === "Tab") {
+      const items = focusableElements();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
+  document.addEventListener("keydown", onKeydown);
+
+  return () => {
+    document.removeEventListener("keydown", onKeydown);
+    backdrop.remove();
+    if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+      previouslyFocused.focus();
+    }
+  };
+}
+
+// Modal de confirmacao reutilizavel. Retorna uma Promise<boolean>: true se o
+// usuario confirmou a acao, false se cancelou ou fechou (Esc/clique fora).
+export function confirmModal(message, options = {}) {
+  const { title = "Confirmar ação", confirmLabel = "Confirmar", danger = false } = options;
+  return new Promise((resolve) => {
+    function finish(result) {
+      close();
+      resolve(result);
+    }
+    const content = el("div", {}, [
+      el("h3", {}, [title]),
+      el("p", { class: "desc" }, [message]),
+      el("div", { class: "form-actions" }, [
+        el("button", { class: "btn btn-secondary", type: "button", onclick: () => finish(false) }, ["Cancelar"]),
+        el(
+          "button",
+          { class: `btn ${danger ? "btn-danger" : "btn-primary"}`, type: "button", onclick: () => finish(true) },
+          [confirmLabel]
+        ),
+      ]),
+    ]);
+    const close = mountModal(content, () => finish(false));
+  });
 }

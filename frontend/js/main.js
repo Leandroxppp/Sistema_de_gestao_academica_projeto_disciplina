@@ -6,10 +6,17 @@ import { renderDashboard } from "./views/dashboard.js";
 import { renderAlunos } from "./views/alunos.js";
 import { renderAlunoDetail } from "./views/aluno-detail.js";
 import { renderMaterias } from "./views/materias.js";
+import { renderMinhasTurmas, renderLancarNotas } from "./views/minhas-turmas.js";
 import { renderAlertas } from "./views/alertas.js";
 import { renderRelatorios } from "./views/relatorios.js";
 import { renderUsuarios } from "./views/usuarios.js";
+import { renderAuditoria } from "./views/auditoria.js";
+import { renderConfig } from "./views/config.js";
 import { showToast } from "./helpers.js";
+import { initTheme } from "./theme.js";
+
+// Aplica o tema salvo antes de montar qualquer UI, evitando o flash do tema errado.
+initTheme();
 
 function isAuthenticated() {
   return Boolean(getStoredUser() && localStorage.getItem("sigma_token"));
@@ -53,9 +60,13 @@ function registerRoutes() {
   registerRoute("/alunos", guardedView(renderAlunos));
   registerRoute("/alunos/:id", guardedView(renderAlunoDetail));
   registerRoute("/materias", guardedView(renderMaterias));
+  registerRoute("/minhas-turmas", guardedView(renderMinhasTurmas));
+  registerRoute("/minhas-turmas/:id", guardedView(renderLancarNotas));
   registerRoute("/alertas", guardedView(renderAlertas));
   registerRoute("/relatorios", guardedView(renderRelatorios));
   registerRoute("/usuarios", guardedView(renderUsuarios, { gestorOnly: true }));
+  registerRoute("/auditoria", guardedView(renderAuditoria, { gestorOnly: true }));
+  registerRoute("/config", guardedView(renderConfig, { gestorOnly: true }));
   registerRoute("/login", () => {
     shellMounted = false;
     showLoginScreen();

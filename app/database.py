@@ -69,6 +69,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             perfil TEXT NOT NULL CHECK (perfil IN ('professor', 'gestor')),
             especializacao TEXT,
             cargo TEXT,
+            ativo INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -78,6 +79,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             carga_horaria INTEGER NOT NULL,
             semestre TEXT NOT NULL,
             professor_id INTEGER,
+            ativo INTEGER NOT NULL DEFAULT 1,
             FOREIGN KEY (professor_id) REFERENCES usuarios(id)
         );
 
@@ -89,6 +91,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'Cadastrado',
             status_risco TEXT NOT NULL DEFAULT 'Baixo',
             probabilidade_evasao REAL NOT NULL DEFAULT 0,
+            ativo INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -150,12 +153,74 @@ def init_db(conn: sqlite3.Connection) -> None:
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (criado_por) REFERENCES usuarios(id) ON DELETE SET NULL
         );
+
+        CREATE TABLE IF NOT EXISTS sessoes (
+            token TEXT PRIMARY KEY,
+            usuario_id INTEGER NOT NULL,
+            expira_em REAL NOT NULL,
+            criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS auditoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario_id INTEGER,
+            usuario_nome TEXT,
+            acao TEXT NOT NULL,
+            entidade TEXT NOT NULL,
+            entidade_id INTEGER,
+            detalhes TEXT,
+            criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+        );
+
+        -- Acoes de acompanhamento (plano de acao) registradas para um aluno em
+        -- risco: contato com responsavel, reuniao, encaminhamento etc.
+        CREATE TABLE IF NOT EXISTS intervencoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            aluno_id INTEGER NOT NULL,
+            tipo TEXT NOT NULL,
+            descricao TEXT,
+            status TEXT NOT NULL DEFAULT 'Pendente',
+            responsavel_id INTEGER,
+            criado_por INTEGER,
+            criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TEXT,
+            resolvido_em TEXT,
+            FOREIGN KEY (aluno_id) REFERENCES alunos(id) ON DELETE CASCADE,
+            FOREIGN KEY (responsavel_id) REFERENCES usuarios(id) ON DELETE SET NULL,
+            FOREIGN KEY (criado_por) REFERENCES usuarios(id) ON DELETE SET NULL
+        );
+
+        -- Configuracoes chave/valor (ex.: limiares de risco). Valor armazenado
+        -- como texto (JSON quando for um objeto) para manter o schema simples.
+        CREATE TABLE IF NOT EXISTS configuracoes (
+            chave TEXT PRIMARY KEY,
+            valor TEXT NOT NULL,
+            atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Indices de performance: colunas usadas com frequencia em filtros, joins
+        -- e ordenacoes. CREATE INDEX IF NOT EXISTS e idempotente, entao pode viver
+        -- direto aqui (assim como as tabelas acima), sem precisar de migracao.
+        CREATE INDEX IF NOT EXISTS idx_alunos_status_risco ON alunos(status_risco);
+        CREATE INDEX IF NOT EXISTS idx_alunos_ativo ON alunos(ativo);
+        CREATE INDEX IF NOT EXISTS idx_usuarios_ativo ON usuarios(ativo);
+        CREATE INDEX IF NOT EXISTS idx_materias_ativo ON materias(ativo);
+        CREATE INDEX IF NOT EXISTS idx_materias_professor ON materias(professor_id);
+        CREATE INDEX IF NOT EXISTS idx_sessoes_usuario ON sessoes(usuario_id);
+        CREATE INDEX IF NOT EXISTS idx_desempenhos_aluno ON desempenhos(aluno_id);
+        CREATE INDEX IF NOT EXISTS idx_analises_aluno ON analises(aluno_id);
+        CREATE INDEX IF NOT EXISTS idx_alertas_aluno ON alertas(aluno_id);
+        CREATE INDEX IF NOT EXISTS idx_alertas_ativo ON alertas(ativo);
+        CREATE INDEX IF NOT EXISTS idx_matriculas_aluno ON matriculas(aluno_id);
+        CREATE INDEX IF NOT EXISTS idx_matriculas_materia ON matriculas(materia_id);
+        CREATE INDEX IF NOT EXISTS idx_auditoria_criado_em ON auditoria(criado_em);
+        CREATE INDEX IF NOT EXISTS idx_intervencoes_aluno ON intervencoes(aluno_id);
+        CREATE INDEX IF NOT EXISTS idx_intervencoes_status ON intervencoes(status);
         """
     )
-    ensure_column(conn, "desempenhos", "atividades_entregues", "INTEGER")
-    ensure_column(conn, "desempenhos", "atividades_esperadas", "INTEGER")
-    ensure_column(conn, "analises", "atividades_entregues", "INTEGER")
-    ensure_column(conn, "analises", "atividades_esperadas", "INTEGER")
+    run_migrations(conn)
     conn.commit()
 
 
@@ -163,6 +228,55 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+# --- Migracoes versionadas --------------------------------------------------
+# CREATE TABLE/INDEX IF NOT EXISTS (acima) ja sao idempotentes e cobrem a
+# maior parte da evolucao do schema. O unico caso que o SQLite nao permite
+# expressar de forma idempotente e ALTER TABLE ADD COLUMN -- por isso essas
+# mudancas continuam passando por `ensure_column`, mas agora orquestradas por
+# uma lista de migracoes numeradas e rastreadas na tabela `schema_migrations`,
+# em vez de chamadas soltas dentro de init_db.
+
+
+def _migracao_001_colunas_atividades(conn: sqlite3.Connection) -> None:
+    ensure_column(conn, "desempenhos", "atividades_entregues", "INTEGER")
+    ensure_column(conn, "desempenhos", "atividades_esperadas", "INTEGER")
+    ensure_column(conn, "analises", "atividades_entregues", "INTEGER")
+    ensure_column(conn, "analises", "atividades_esperadas", "INTEGER")
+
+
+def _migracao_002_soft_delete(conn: sqlite3.Connection) -> None:
+    ensure_column(conn, "usuarios", "ativo", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(conn, "alunos", "ativo", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(conn, "materias", "ativo", "INTEGER NOT NULL DEFAULT 1")
+
+
+MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "adiciona atividades_entregues/atividades_esperadas em desempenhos e analises", _migracao_001_colunas_atividades),
+    (2, "adiciona coluna ativo (soft delete) em usuarios, alunos e materias", _migracao_002_soft_delete),
+]
+
+
+def run_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            versao INTEGER PRIMARY KEY,
+            descricao TEXT NOT NULL,
+            aplicada_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    aplicadas = {row["versao"] for row in conn.execute("SELECT versao FROM schema_migrations").fetchall()}
+    for versao, descricao, migrar in MIGRATIONS:
+        if versao in aplicadas:
+            continue
+        migrar(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (versao, descricao) VALUES (?, ?)",
+            (versao, descricao),
+        )
 
 
 def seed_db(conn: sqlite3.Connection) -> None:

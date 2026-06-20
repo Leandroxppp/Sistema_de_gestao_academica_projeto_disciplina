@@ -27,11 +27,11 @@ function paint(container, relatorios) {
       : el("table", {}, [
           el("thead", {}, [
             el("tr", {}, [
-              el("th", {}, ["Título"]),
-              el("th", {}, ["Tipo"]),
-              el("th", {}, ["Criado por"]),
-              el("th", {}, ["Criado em"]),
-              el("th", {}, [""]),
+              el("th", { scope: "col" }, ["Título"]),
+              el("th", { scope: "col" }, ["Tipo"]),
+              el("th", { scope: "col" }, ["Criado por"]),
+              el("th", { scope: "col" }, ["Criado em"]),
+              el("th", { scope: "col" }, [""]),
             ]),
           ]),
           el(
@@ -44,7 +44,10 @@ function paint(container, relatorios) {
                 el("td", { class: "muted" }, [r.criado_por_nome || "—"]),
                 el("td", { class: "muted" }, [fmtDataHora(r.criado_em)]),
                 el("td", {}, [
-                  el("button", { class: "btn btn-ghost btn-sm", onclick: () => openViewModal(r) }, ["Ver conteúdo"]),
+                  el("div", { class: "row-actions" }, [
+                    el("button", { class: "btn btn-ghost btn-sm", onclick: () => openViewModal(r) }, ["Ver conteúdo"]),
+                    el("button", { class: "btn btn-secondary btn-sm", onclick: () => baixarRelatorio(r) }, ["Baixar"]),
+                  ]),
                 ]),
               ])
             )
@@ -70,6 +73,39 @@ function paint(container, relatorios) {
   );
 }
 
+function baixarRelatorio(relatorio) {
+  let conteudo = relatorio.conteudo;
+  let extensao = "txt";
+  let mime = "text/plain";
+  try {
+    conteudo = JSON.stringify(JSON.parse(relatorio.conteudo), null, 2);
+    extensao = "json";
+    mime = "application/json";
+  } catch {
+    // conteudo nao e JSON, mantem como texto puro
+  }
+
+  const nomeArquivo = `${slugify(relatorio.titulo) || "relatorio"}-${relatorio.id}.${extensao}`;
+  const blob = new Blob([conteudo], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = nomeArquivo;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function slugify(texto) {
+  return (texto || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(new RegExp("[\\u0300-\\u036f]", "g"), "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function openViewModal(relatorio) {
   let conteudo = relatorio.conteudo;
   try {
@@ -79,7 +115,7 @@ function openViewModal(relatorio) {
   }
   const content = el("div", {}, [
     el("h3", {}, [relatorio.titulo]),
-    el("pre", { style: "background:var(--surface-2); padding:12px; border-radius:8px; font-size:12px; max-height:50vh; overflow:auto; white-space:pre-wrap;" }, [
+    el("div", { style: "background:var(--surface-2); padding:14px 16px; border-radius:8px; font-family:inherit; font-size:14px; line-height:1.6; max-height:50vh; overflow:auto; white-space:pre-wrap;" }, [
       conteudo,
     ]),
     el("div", { class: "form-actions" }, [

@@ -25,11 +25,11 @@ function paint(container, alertas) {
     return el("table", {}, [
       el("thead", {}, [
         el("tr", {}, [
-          el("th", {}, ["Aluno"]),
-          el("th", {}, ["Mensagem"]),
-          el("th", {}, ["Nível"]),
-          el("th", {}, ["Criado em"]),
-          list === resolvidos ? el("th", {}, ["Resolvido em"]) : null,
+          el("th", { scope: "col" }, ["Aluno"]),
+          el("th", { scope: "col" }, ["Mensagem"]),
+          el("th", { scope: "col" }, ["Nível"]),
+          el("th", { scope: "col" }, ["Criado em"]),
+          list === resolvidos ? el("th", { scope: "col" }, ["Resolvido em"]) : null,
         ]),
       ]),
       el(
@@ -38,7 +38,19 @@ function paint(container, alertas) {
         list.map((alerta) =>
           el(
             "tr",
-            { class: "clickable", onclick: () => navigate(`/alunos/${alerta.aluno_id}`) },
+            {
+              class: "clickable",
+              tabIndex: 0,
+              role: "button",
+              "aria-label": `Ver detalhes de ${alerta.aluno_nome}`,
+              onclick: () => navigate(`/alunos/${alerta.aluno_id}`),
+              onkeydown: (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  navigate(`/alunos/${alerta.aluno_id}`);
+                }
+              },
+            },
             [
               el("td", {}, [el("strong", {}, [alerta.aluno_nome]), el("div", { class: "muted", style: "font-size:11.5px;" }, [alerta.matricula])]),
               el("td", {}, [alerta.mensagem]),

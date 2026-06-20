@@ -99,12 +99,12 @@ function paint(container, data) {
           [
             el("thead", {}, [
               el("tr", {}, [
-                el("th", {}, ["Aluno"]),
-                el("th", {}, ["Nível"]),
-                el("th", {}, ["Fator de risco"]),
-                el("th", {}, ["Média"]),
-                el("th", {}, ["Frequência"]),
-                el("th", {}, ["Quando"]),
+                el("th", { scope: "col" }, ["Aluno"]),
+                el("th", { scope: "col" }, ["Nível"]),
+                el("th", { scope: "col" }, ["Fator de risco"]),
+                el("th", { scope: "col" }, ["Média"]),
+                el("th", { scope: "col" }, ["Frequência"]),
+                el("th", { scope: "col" }, ["Quando"]),
               ]),
             ]),
             el(
