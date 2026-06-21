@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 from pathlib import Path
 from threading import RLock
@@ -37,8 +38,8 @@ MIME_TYPES = {
 
 
 class Application:
-    def __init__(self) -> None:
-        self.conn = connect()
+    def __init__(self, conn: sqlite3.Connection | None = None) -> None:
+        self.conn = conn if conn is not None else connect()
         init_db(self.conn)
         seed_db(self.conn)
         self.auth = AuthService(self.conn)

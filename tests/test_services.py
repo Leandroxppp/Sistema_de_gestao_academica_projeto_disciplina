@@ -22,6 +22,16 @@ class ServiceTests(unittest.TestCase):
         seed_db(self.conn)
         self.service = AcademicService(self.conn, MotorIA())
 
+    def _nova_app(self) -> Application:
+        # Application(conn=...) com conexao isolada em memoria -- evita que
+        # estes testes leiam/gravem em data/academico.db (arquivo real) e
+        # vazem estado uns para os outros (ex.: usuario desativado em um
+        # teste afetando o login de outro).
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return Application(conn=conn)
+
     def test_login_valido_retorna_token(self) -> None:
         auth = AuthService(self.conn)
         result = auth.login("professor@sigma.edu", "professor123")
@@ -59,13 +69,13 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result["total"], 3)
 
     def test_rota_inicial_publica_existe(self) -> None:
-        app = Application()
+        app = self._nova_app()
         status, payload = app.dispatch("GET", "/", {}, {})
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "online")
 
     def test_professor_nao_pode_cadastrar_aluno(self) -> None:
-        app = Application()
+        app = self._nova_app()
         login = app.auth.login("professor@sigma.edu", "professor123")
         with self.assertRaises(Exception) as ctx:
             app.dispatch(
@@ -77,7 +87,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 403)
 
     def test_gestor_pode_cadastrar_aluno(self) -> None:
-        app = Application()
+        app = self._nova_app()
         login = app.auth.login("gestor@sigma.edu", "gestor123")
         matricula = f"G{uuid4().hex[:8]}"
         status, payload = app.dispatch(
@@ -137,7 +147,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 429)
 
     def test_desativar_usuario_revoga_sessao(self) -> None:
-        app = Application()
+        app = self._nova_app()
         professor_login = app.auth.login("professor@sigma.edu", "professor123")
         gestor_login = app.auth.login("gestor@sigma.edu", "gestor123")
         status, _ = app.dispatch(
